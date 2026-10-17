@@ -1,7 +1,7 @@
 # Prompt: let Discobot hand its voices to a guest (for Axis Stack)
 
-This is a prompt for whoever maintains [Discobot](https://github.com/iw978599/discobot) to give to
-Claude, in the Discobot repository. It adds one optional feature, `input`, to guest protocol
+This is a prompt for Ian, who maintains [Discobot](https://github.com/iw978599/discobot), to give
+to Claude in the Discobot repository. It adds one optional feature, `input`, to guest protocol
 version 1. With it, a guest instrument can take one of Discobot's own voices, such as a synth lane or
 a drum, and play it back through its own processing.
 
