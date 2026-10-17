@@ -168,6 +168,15 @@ th{font-size:12px;letter-spacing:.14em;text-transform:uppercase;color:var(--mute
 tr:last-child td{border-bottom:0}
 td .mono{font-size:13px}
 .learning{color:var(--alert)!important;border-color:var(--alert)!important}
+.hostchip{display:flex;align-items:center;gap:6px;font-family:var(--mono);font-size:12px;color:var(--teal);border:1px solid var(--line);border-radius:4px;padding:5px 8px;background:var(--well);white-space:nowrap}
+.hostchip i{width:7px;height:7px;border-radius:50%;background:var(--teal)}
+.srcseg{display:flex;gap:2px;background:var(--well);border:1px solid var(--line);border-radius:4px;padding:2px}
+.srcseg button{flex:1;border:0;background:none;padding:4px 6px;border-radius:3px;font-size:12px;letter-spacing:.12em;text-transform:uppercase;font-weight:600;color:var(--muted);cursor:pointer}
+.srcseg button[aria-pressed="true"]{background:var(--panel-2);color:var(--ink)}
+.srcseg button:disabled{opacity:.4;cursor:not-allowed}
+.keys.scroll{max-height:236px;overflow-y:auto;padding-right:2px}
+.src-note{font-size:13px;color:var(--muted);margin:0;line-height:1.35}
+.wake{position:fixed;left:50%;transform:translateX(-50%);bottom:calc(16px + env(safe-area-inset-bottom,0px));z-index:40;box-shadow:0 6px 24px var(--shadow)}
 .sr{position:absolute;width:1px;height:1px;overflow:hidden;clip:rect(0 0 0 0)}
 
 @media (max-width:900px){.cols{grid-template-columns:1fr}}
@@ -198,6 +207,7 @@ td .mono{font-size:13px}
       <button role="tab" id="tab-setup" aria-selected="false" data-page="setup">Setup</button>
     </nav>
     <div class="transport">
+      <span class="hostchip" id="hostChip" hidden><i></i><span id="hostChipText">Discobot</span></span>
       <div class="midi-led" title="MIDI activity"><i id="midiLed"></i>MIDI</div>
       <button class="play" id="playBtn" aria-pressed="false" aria-label="Play sample loop"><svg viewBox="0 0 24 24"><path id="playIcon" d="M7 4l13 8-13 8z"/></svg></button>
       <button class="btn" id="themeBtn" aria-label="Switch to light theme">☀ Light</button>
@@ -221,8 +231,13 @@ td .mono{font-size:13px}
 
       <aside class="rail" aria-label="Pad controls">
         <div class="group">
-          <div class="group-head"><span>Sample</span><em id="sampleLen">—</em></div>
+          <div class="group-head"><span>Source</span><em id="sampleLen">—</em></div>
+          <div class="srcseg" id="srcSeg" role="group" aria-label="Sound source">
+            <button id="srcSample" data-v="sample" aria-pressed="true">Samples</button>
+            <button id="srcDisco" data-v="discobot" aria-pressed="false">Discobot</button>
+          </div>
           <div class="keys" id="sampleKeys"></div>
+          <p class="src-note" id="srcNote" hidden></p>
         </div>
         <div class="group">
           <div class="group-head"><span>Axis set</span><em id="setName"></em></div>
@@ -282,6 +297,12 @@ td .mono{font-size:13px}
   <!-- SETUP -->
   <section id="page-setup" class="page" hidden>
     <div class="section">
+      <div class="eyebrow">Discobot</div>
+      <h2>Discobot guest</h2>
+      <p class="hint">Axis Stack can sit in Discobot's rack as a guest instrument. In Discobot choose Project → Add Guest Instrument and paste this page's address. Discobot then starts and stops the sample loop on its beat, sets the tempo, takes the sound into its mixer and keeps these settings with each scene. Where Discobot shares its voices, switch Source on the Pad page to Discobot and pick a synth or drum: the pad then plays that voice through the axis chains instead of a sample.</p>
+      <p class="midi-status" id="dbStatus">Not inside Discobot.</p>
+    </div>
+    <div class="section">
       <div class="eyebrow">Samples</div>
       <h2>Sample slots</h2>
       <p class="hint">Four built-in loops are loaded so the pad works right away. Load your own audio into any slot and drag the loop points to choose the part that repeats. Loaded files stay in this session only.</p>
@@ -321,6 +342,7 @@ td .mono{font-size:13px}
     </div>
   </section>
 </main>
+<button class="btn primary wake" id="wakeBtn" hidden>Click to enable sound</button>
 
 <script>
 (() => {
@@ -536,14 +558,21 @@ const MAP_LABELS = { x: 'Pad X', y: 'Pad Y', touch: 'Pad touch (on/off)', s0: 'S
   set0: 'Axis set A', set1: 'Axis set B', set2: 'Axis set C', set3: 'Axis set D', rec: 'Loop record', loop: 'Loop play', clear: 'Loop erase', hold: 'Hold', play: 'Play / stop' };
 
 const STORE = 'axis-stack-v1';
-let state = { sets: defaultSets(), cur: 0, sample: 0, settings: { gate: 'latch', loopSync: true, hold: false, vol: 0.85, midiOn: false, midiIn: '', midiOut: '', outCh: 1, outCcX: 12, outCcY: 13 }, map: JSON.parse(JSON.stringify(DEF_MAP)), loops: {} };
+let state = { sets: defaultSets(), cur: 0, sample: 0, source: { mode: 'sample', id: null }, settings: { gate: 'latch', loopSync: true, hold: false, vol: 0.85, midiOn: false, midiIn: '', midiOut: '', outCh: 1, outCcX: 12, outCcY: 13 }, map: JSON.parse(JSON.stringify(DEF_MAP)), loops: {} };
 try {
   const s = JSON.parse(localStorage.getItem(STORE) || 'null');
   if (s && Array.isArray(s.sets) && s.sets.length === 4) { state = Object.assign(state, s); state.settings = Object.assign({}, state.settings, s.settings || {}); state.map = Object.assign({}, DEF_MAP, s.map || {}); }
 } catch (e) {}
 state.sets.forEach(s => { s.loopOn = false; });
+if (!state.source || typeof state.source !== 'object') state.source = { mode: 'sample', id: null };
+state.source.mode = 'sample'; // Discobot voices only exist once a host has said hello
 let saveT = 0;
-function save() { clearTimeout(saveT); saveT = setTimeout(() => { try { localStorage.setItem(STORE, JSON.stringify(state)); } catch (e) {} }, 250); }
+// Inside Discobot the settings belong to the project, not this browser: tell the host instead.
+function save() {
+  clearTimeout(saveT);
+  if (isHosted) { saveT = setTimeout(() => gsend({ type: 'stateChanged' }), 1000); return; }
+  saveT = setTimeout(() => { try { localStorage.setItem(STORE, JSON.stringify(state)); } catch (e) {} }, 250);
+}
 const curSet = () => state.sets[state.cur];
 
 /* ================= built-in samples ================= */
@@ -622,26 +651,55 @@ const samples = BUILTINS.map(([name]) => ({ name, builtin: true, chans: null, sr
 function makeBuiltin(i) { const s = samples[i]; s.chans = BUILTINS[i][1](); s.sr = SR; s.buffer = null; s.name = BUILTINS[i][0]; s.builtin = true; }
 
 /* ================= audio engine ================= */
-let ctx = null, master, chainIn, analyser, workletReady = false, live = [], src = null, srcGain = null, srcStart = 0;
-let playing = false, srcOn = false, pitchSemi = 0;
+let ctx = null, master, chainIn, analyser, monitor, workletReady = false, audioReady = null, live = [], src = null, srcGain = null, srcStart = 0;
+let playing = false, srcOn = false, pitchSemi = 0, tempoRate = 1, lastRate = 1;
+let inputNode = null, inputGain = null, pitchNode = null, inputOpen = false, tapNode = null;
 const CRUSH_SRC = `class C extends AudioWorkletProcessor{static get parameterDescriptors(){return[{name:'bits',defaultValue:16,minValue:1,maxValue:16},{name:'rate',defaultValue:1,minValue:1,maxValue:64}]}
 constructor(){super();this.h=[0,0];this.c=0}
 process(i,o,p){const inp=i[0],out=o[0];if(!inp||!inp.length){return true}const n=out[0].length;
 for(let s=0;s<n;s++){const b=p.bits.length>1?p.bits[s]:p.bits[0],r=p.rate.length>1?p.rate[s]:p.rate[0];const q=Math.pow(2,b-1);
 this.c+=1;const take=this.c>=r;if(take)this.c-=r;
 for(let ch=0;ch<out.length;ch++){const x=(inp[ch]||inp[0])[s];if(take)this.h[ch]=Math.round(x*q)/q;out[ch][s]=b>=15.9&&r<=1.01?x:this.h[ch]}}return true}}
-registerProcessor('axis-crush',C);`;
+registerProcessor('axis-crush',C);
+class Tap extends AudioWorkletProcessor{constructor(){super();this.l=new Float32Array(1024);this.r=new Float32Array(1024);this.n=0;this.s=0}
+process(i){const a=i[0]&&i[0][0],b=i[0]&&(i[0][1]||i[0][0]);if(this.n===0)this.s=currentFrame;for(let k=0;k<128;k++){this.l[this.n+k]=a?a[k]:0;this.r[this.n+k]=b?b[k]:0}this.n+=128;
+if(this.n>=1024){this.port.postMessage({frame:this.s,l:this.l,r:this.r},[this.l.buffer,this.r.buffer]);this.l=new Float32Array(1024);this.r=new Float32Array(1024);this.n=0}return true}}
+registerProcessor('axis-tap',Tap);
+class In extends AudioWorkletProcessor{constructor(){super();this.N=1<<17;this.m=this.N-1;this.L=new Float32Array(this.N);this.R=new Float32Array(this.N);
+this.port.onmessage=e=>{const d=e.data;if(d.clear){this.L.fill(0);this.R.fill(0);return}const f=d.frame,l=d.l,r=d.r;for(let k=0;k<l.length;k++){const x=(f+k)&this.m;this.L[x]=l[k];this.R[x]=r[k]}}}
+process(_,o){const a=o[0][0],b=o[0][1]||o[0][0];for(let k=0;k<128;k++){const x=(currentFrame+k)&this.m;a[k]=this.L[x];b[k]=this.R[x];this.L[x]=0;this.R[x]=0}return true}}
+registerProcessor('axis-input',In);
+class Shift extends AudioWorkletProcessor{static get parameterDescriptors(){return[{name:'semi',defaultValue:0,minValue:-48,maxValue:48}]}
+constructor(){super();this.N=8192;this.b=[new Float32Array(this.N),new Float32Array(this.N)];this.w=0;this.p=0;this.mix=0;this.W=2400}
+rd(buf,d){let x=this.w-d;while(x<0)x+=this.N;const i=Math.floor(x),f=x-i,j=(i+1)%this.N;return buf[i]+(buf[j]-buf[i])*f}
+process(i,o,P){const inp=i[0],out=o[0],n=out[0].length,s=P.semi.length>1?P.semi[0]:P.semi[0],ratio=Math.pow(2,s/12),want=Math.min(1,Math.abs(s)/0.25),W=this.W;
+for(let k=0;k<n;k++){this.mix+=(want-this.mix)*0.002;const ph2=(this.p+0.5)%1,g1=Math.sin(Math.PI*this.p)**2,g2=Math.sin(Math.PI*ph2)**2;
+for(let c=0;c<2;c++){const src=inp&&(inp[c]||inp[0]),x=src?src[k]:0,buf=this.b[c];buf[this.w]=x;
+const y=this.mix>0.0005?this.rd(buf,this.p*W+3)*g1+this.rd(buf,ph2*W+3)*g2:0;if(out[c])out[c][k]=x*(1-this.mix)+y*this.mix}
+this.w=(this.w+1)%this.N;this.p+=(1-ratio)/W;this.p-=Math.floor(this.p)}return true}}
+registerProcessor('axis-pitch',Shift);`;
 
-async function initAudio() {
-  if (ctx) { if (ctx.state !== 'running') ctx.resume(); return; }
+function initAudio() {
+  if (ctx) { if (ctx.state !== 'running') ctx.resume().catch(() => {}); return audioReady; }
   ctx = new (window.AudioContext || window.webkitAudioContext)();
   master = ctx.createGain(); master.gain.value = state.settings.vol;
   const comp = ctx.createDynamicsCompressor(); comp.threshold.value = -8; comp.ratio.value = 6; comp.attack.value = 0.003;
   analyser = ctx.createAnalyser(); analyser.fftSize = 1024;
-  master.connect(comp); comp.connect(analyser); analyser.connect(ctx.destination);
+  monitor = ctx.createGain(); // this page's own speakers; silenced while Discobot carries the sound
+  master.connect(comp); comp.connect(analyser); analyser.connect(monitor); monitor.connect(ctx.destination);
   chainIn = ctx.createGain();
-  try { if (ctx.audioWorklet) { await ctx.audioWorklet.addModule(URL.createObjectURL(new Blob([CRUSH_SRC], { type: 'application/javascript' }))); workletReady = true; } } catch (e) { workletReady = false; }
-  rebuildChain();
+  inputGain = ctx.createGain(); inputGain.gain.value = 0;
+  audioReady = (async () => {
+    try { if (ctx.audioWorklet) { await ctx.audioWorklet.addModule(URL.createObjectURL(new Blob([CRUSH_SRC], { type: 'application/javascript' }))); workletReady = true; } } catch (e) { workletReady = false; }
+    if (workletReady) {
+      inputNode = new AudioWorkletNode(ctx, 'axis-input', { numberOfInputs: 0, numberOfOutputs: 1, outputChannelCount: [2] });
+      pitchNode = new AudioWorkletNode(ctx, 'axis-pitch', { numberOfInputs: 1, numberOfOutputs: 1, outputChannelCount: [2] });
+      inputNode.connect(inputGain); inputGain.connect(pitchNode); pitchNode.connect(chainIn);
+    }
+    rebuildChain();
+    if (streaming) startStreaming();
+  })();
+  return audioReady;
 }
 function bufferFor(s) {
   if (s.buffer) return s.buffer;
@@ -650,16 +708,35 @@ function bufferFor(s) {
   b.copyToChannel(s.chans[0], 0); b.copyToChannel(s.chans[1] || s.chans[0], 1);
   return (s.buffer = b);
 }
-function startSource() {
-  if (!ctx) return; stopSource();
+// atWall: when the start should be heard (shared clock). Without it the loop starts now; while
+// Discobot is playing, either way the sample picks up at the point that matches the host's beat.
+function startSource(atWall) {
+  if (!ctx || state.source.mode !== 'sample') return; stopSource();
   const s = samples[state.sample], b = bufferFor(s); if (!b) return;
+  const L = lead(); let when = ctx.currentTime + 0.01;
+  if (atWall != null) when = Math.max(ctx.currentTime + 0.005, ctxAtWall(atWall - L));
   src = ctx.createBufferSource(); src.buffer = b; src.loop = true;
   src.loopStart = s.loopStart * b.duration; src.loopEnd = Math.max(s.loopStart + 0.005, s.loopEnd) * b.duration;
-  src.playbackRate.value = Math.pow(2, pitchSemi / 12);
-  srcGain = ctx.createGain(); const t = ctx.currentTime;
-  srcGain.gain.setValueAtTime(0, t); srcGain.gain.linearRampToValueAtTime(1, t + 0.008);
-  src.connect(srcGain); srcGain.connect(chainIn); src.start(t, src.loopStart); srcStart = performance.now();
+  const fit = hostFit(); tempoRate = fit.rate;
+  lastRate = Math.pow(2, pitchSemi / 12) * tempoRate; src.playbackRate.value = lastRate;
+  let offset = src.loopStart;
+  if (fit.beats) {
+    const heard = atWall != null ? atWall : wallAtCtx(when) + L;
+    offset = src.loopStart + (pmod(beatAt(heard), fit.beats) / fit.beats) * (src.loopEnd - src.loopStart);
+  }
+  srcGain = ctx.createGain();
+  srcGain.gain.setValueAtTime(0, when); srcGain.gain.linearRampToValueAtTime(1, when + 0.008);
+  src.connect(srcGain); srcGain.connect(chainIn); src.start(when, offset); srcStart = performance.now();
   srcOn = true;
+}
+// While Discobot plays, a sample loop is fitted to a whole number of its beats (tape-style: the
+// speed, and so the pitch, moves with the tempo) so it stays locked to the beat.
+function hostFit() {
+  const span = sampleLoopDur();
+  if (!hostPlaying() || !span) return { beats: 0, rate: 1 };
+  const raw = span * transport.bpm / 60; let best = 1;
+  for (const n of [1, 2, 3, 4, 6, 8, 12, 16, 24, 32, 48, 64]) if (Math.abs(Math.log(n / raw)) < Math.abs(Math.log(best / raw))) best = n;
+  return { beats: best, rate: raw / best };
 }
 function stopSource() {
   if (!src) { srcOn = false; return; }
@@ -697,7 +774,12 @@ function applyMapping() {
     if (FX[m.e.type].pitch) { semi += v; continue; }
     if (m.last === null || Math.abs(v - m.last) > 1e-5 * (Math.abs(v) + 1)) { m.mod.set(m.e.param, v, t); m.last = v; }
   }
-  if (semi !== pitchSemi) { pitchSemi = semi; if (src) src.playbackRate.setTargetAtTime(Math.pow(2, semi / 12), t, TC); }
+  if (semi !== pitchSemi) {
+    pitchSemi = semi;
+    if (pitchNode) pitchNode.parameters.get('semi').setTargetAtTime(clamp(semi, -48, 48), t, TC);
+  }
+  const rate = Math.pow(2, pitchSemi / 12) * tempoRate;
+  if (rate !== lastRate) { lastRate = rate; if (src) src.playbackRate.setTargetAtTime(rate, t, TC); }
 }
 
 /* ================= pad interaction & loops ================= */
@@ -725,44 +807,75 @@ function loopSample(loop, t) {
   const a = p[lo], b = p[hi], k = (t - a[0]) / (b[0] - a[0] || 1);
   return { x: a[1] + (b[1] - a[1]) * k, y: a[2] + (b[2] - a[2]) * k, touch: !!a[3] };
 }
+// A control loop is timed in seconds, or in Discobot beats when recorded while Discobot plays.
+// A beat loop replays locked to the host's beat count and follows its tempo.
+const pmod = (a, n) => ((a % n) + n) % n;
+function recTime(now) { return rec.unit === 'beat' ? beatAt(wallNow() + lead()) - rec.b0 : (now - rec.t0) / 1000; }
 function toggleRec() {
   initAudio();
   const set = curSet(), now = performance.now();
-  if (!rec) { rec = { t0: now, pts: [], set: state.cur }; set.loopOn = false; }
-  else {
-    let len = (now - rec.t0) / 1000;
-    if (len < 0.25 || !rec.pts.length) { rec = null; updateRail(); return; }
-    if (state.settings.loopSync) { const d = sampleLoopDur(); if (d > 0.05) len = Math.max(1, Math.round(len / d)) * d; }
-    const pts = []; let lt = -1; for (const p of rec.pts) if (p[0] - lt >= 0.03 && p[0] <= len) { pts.push(p); lt = p[0]; }
-    state.sets[rec.set].loop = { pts, len }; state.sets[rec.set].loopOn = true; state.sets[rec.set].loopT0 = rec.t0 + len * 1000 > now ? rec.t0 : now;
+  if (!rec) {
+    rec = hostPlaying() ? { unit: 'beat', b0: beatAt(wallNow() + lead()), t0: now, pts: [], set: state.cur } : { unit: 's', t0: now, pts: [], set: state.cur };
+    set.loopOn = false;
+  } else {
+    let len = recTime(now);
+    if (len < (rec.unit === 'beat' ? 0.5 : 0.25) || !rec.pts.length) { rec = null; updateRail(); return; }
+    if (rec.unit === 'beat') { if (state.settings.loopSync) len = Math.max(1, Math.round(len)); }
+    else if (state.settings.loopSync) { const d = sampleLoopDur(); if (d > 0.05) len = Math.max(1, Math.round(len / d)) * d; }
+    const step = rec.unit === 'beat' ? 0.03 * (transport.bpm || 120) / 60 : 0.03;
+    const pts = []; let lt = -1; for (const p of rec.pts) if (p[0] - lt >= step && p[0] <= len) { pts.push(p); lt = p[0]; }
+    const tgt = state.sets[rec.set];
+    tgt.loop = { pts, len, unit: rec.unit, start: rec.unit === 'beat' ? rec.b0 : 0 }; tgt.loopOn = true; tgt.loopT0 = now;
     rec = null; save();
   }
   updateRail();
 }
-function toggleLoopPlay() { const s = curSet(); if (!s.loop) return; s.loopOn = !s.loopOn; if (s.loopOn) s.loopT0 = performance.now(); updateRail(); }
+function loopTime(set, now) {
+  const L = set.loop;
+  if (L.unit === 'beat') {
+    if (hostPlaying()) return pmod(beatAt(wallNow() + lead()) - (L.start || 0), L.len);
+    return pmod((now - set.loopT0) / 1000 * (transport.bpm || 120) / 60, L.len);
+  }
+  return pmod((now - set.loopT0) / 1000, L.len);
+}
+function toggleLoopPlay() { const s = curSet(); if (!s.loop) return; s.loopOn = !s.loopOn; if (s.loopOn) s.loopT0 = performance.now(); save(); updateRail(); }
 function clearLoop() { const s = curSet(); s.loop = null; s.loopOn = false; if (rec && rec.set === state.cur) rec = null; save(); updateRail(); }
 
-function frame(now) {
+// Sound and timing run from a timer, not from drawing: inside Discobot the frame may be off
+// screen, where animation frames slow down or stop.
+let gateOpenNow = false;
+function tick() {
+  const now = performance.now();
   const dt = Math.min(0.1, (now - lastFrame) / 1000); lastFrame = now;
   const set = curSet();
   let lp = null;
-  if (set.loop && set.loopOn && !rec) lp = loopSample(set.loop, ((now - set.loopT0) / 1000) % set.loop.len);
+  if (set.loop && set.loopOn && !rec && set.loop.pts.length) lp = loopSample(set.loop, loopTime(set, now));
   if (touching || midiTouch) { /* position set by input */ }
   else if (lp) { pos.x = lp.x; pos.y = lp.y; }
   else if (!state.settings.hold && !midiHeld) { const k = 1 - Math.exp(-dt * 11); pos.x += (set.restX - pos.x) * k; pos.y += (set.restY - pos.y) * k; }
-  const gateOpen = touching || midiTouch || !!(lp && lp.touch);
-  if (rec) rec.pts.push([(now - rec.t0) / 1000, pos.x, pos.y, (touching || midiTouch) ? 1 : 0]);
+  const gateOpen = gateOpenNow = touching || midiTouch || !!(lp && lp.touch);
+  if (rec) rec.pts.push([recTime(now), pos.x, pos.y, (touching || midiTouch) ? 1 : 0]);
 
   if (ctx) {
-    const want = state.settings.gate === 'touch' ? gateOpen : playing;
-    if (want && !srcOn) startSource(); else if (!want && srcOn) stopSource();
+    if (state.source.mode === 'sample') {
+      const want = state.settings.gate === 'touch' ? gateOpen : playing;
+      if (want && !srcOn) startSource(); else if (!want && srcOn) stopSource();
+      if (inputOpen) { inputGain.gain.setTargetAtTime(0, ctx.currentTime, 0.008); inputOpen = false; }
+    } else {
+      if (srcOn) stopSource();
+      const open = state.settings.gate === 'touch' ? gateOpen : true;
+      if (open !== inputOpen) { inputGain.gain.setTargetAtTime(open ? 1 : 0, ctx.currentTime, 0.008); inputOpen = open; }
+    }
   }
   applyMapping();
   sendMidiXY();
   trail.push([pos.x, pos.y, now]); while (trail.length && now - trail[0][2] > 600) trail.shift();
-  if (!$('#page-pad').hidden) { drawPad(now, set, gateOpen); updateReadout(); updateLoopInfo(now); }
+}
+function draw() {
+  const now = performance.now();
+  if (!$('#page-pad').hidden) { drawPad(now, curSet(), gateOpenNow); updateReadout(); updateLoopInfo(now); }
   else if (!$('#page-chains').hidden) drawCurveDots();
-  requestAnimationFrame(frame);
+  requestAnimationFrame(draw);
 }
 
 /* ================= drawing ================= */
@@ -791,7 +904,7 @@ function drawPad(now, set, gateOpen) {
     g.strokeStyle = C.teal; g.globalAlpha = set.loopOn ? 0.7 : 0.3; g.lineWidth = 1.5 * d; g.setLineDash([4 * d, 4 * d]); g.beginPath();
     set.loop.pts.forEach((p, i) => { const x = p[1] * W, y = (1 - p[2]) * H; i ? g.lineTo(x, y) : g.moveTo(x, y); });
     g.stroke(); g.setLineDash([]); g.globalAlpha = 1;
-    if (set.loopOn) { const ph = (((now - set.loopT0) / 1000) % set.loop.len) / set.loop.len; g.fillStyle = C.teal; g.fillRect(0, H - 3 * d, W * ph, 3 * d); }
+    if (set.loopOn) { const ph = loopTime(set, now) / set.loop.len; g.fillStyle = C.teal; g.fillRect(0, H - 3 * d, W * ph, 3 * d); }
   }
   if (rec) { g.fillStyle = C.alert; g.fillRect(0, 0, W, 3 * d); }
   // crosshair
@@ -835,21 +948,43 @@ function updateReadout() {
 let loopInfoLast = '';
 function updateLoopInfo(now) {
   const s = curSet(); let t;
-  if (rec) t = 'rec ' + ((now - rec.t0) / 1000).toFixed(1) + ' s';
-  else if (s.loop) t = s.loop.len.toFixed(1) + ' s' + (s.loopOn ? ' ▸' : '');
+  if (rec) t = 'rec ' + (rec.unit === 'beat' ? recTime(now).toFixed(1) + ' beats' : recTime(now).toFixed(1) + ' s');
+  else if (s.loop) t = (s.loop.unit === 'beat' ? s.loop.len + (s.loop.len === 1 ? ' beat' : ' beats') : s.loop.len.toFixed(1) + ' s') + (s.loopOn ? ' ▸' : '');
   else t = 'empty';
   if (t !== loopInfoLast) { $('#loopInfo').textContent = t; loopInfoLast = t; }
 }
 function keyHTML(big, small) { return `<span class="led"></span><b>${esc(big)}</b><small>${esc(small)}</small>`; }
+function voiceCode(v, i) {
+  if (v.kind === 'synth') { const m = /(\d+)/.exec(v.id); return 'S' + (m ? m[1] : i + 1); }
+  if (v.kind === 'drums') return 'Drm';
+  if (v.kind === 'mix') return 'Mix';
+  return String(v.name || '?').replace(/[^A-Za-z0-9]/g, '').slice(0, 4) || String(i + 1);
+}
 function buildRail() {
   const sk = $('#sampleKeys'); sk.innerHTML = '';
-  samples.forEach((s, i) => { const b = document.createElement('button'); b.className = 'key'; b.innerHTML = keyHTML(i + 1, s.name); b.onclick = () => selectSample(i); sk.appendChild(b); });
+  const disco = state.source.mode === 'discobot';
+  sk.classList.toggle('scroll', disco && hostSources.length > 6);
+  if (disco) hostSources.forEach((v, i) => { const b = document.createElement('button'); b.className = 'key'; b.dataset.id = v.id; b.innerHTML = keyHTML(voiceCode(v, i), v.name); b.onclick = () => selectVoice(v.id); sk.appendChild(b); });
+  else samples.forEach((s, i) => { const b = document.createElement('button'); b.className = 'key'; b.innerHTML = keyHTML(i + 1, s.name); b.onclick = () => selectSample(i); sk.appendChild(b); });
   const st = $('#setKeys'); st.innerHTML = '';
   state.sets.forEach((s, i) => { const b = document.createElement('button'); b.className = 'key'; b.innerHTML = keyHTML('ABCD'[i], s.name); b.onclick = () => selectSet(i); st.appendChild(b); });
   updateRail();
 }
 function updateRail() {
-  $$('#sampleKeys .key').forEach((b, i) => b.setAttribute('aria-pressed', i === state.sample));
+  const disco = state.source.mode === 'discobot';
+  if (disco) $$('#sampleKeys .key').forEach(b => b.setAttribute('aria-pressed', b.dataset.id === state.source.id));
+  else $$('#sampleKeys .key').forEach((b, i) => b.setAttribute('aria-pressed', i === state.sample));
+  $('#srcSample').setAttribute('aria-pressed', !disco); $('#srcDisco').setAttribute('aria-pressed', disco);
+  $('#srcDisco').disabled = !isHosted;
+  $('#srcDisco').title = isHosted ? 'Play a Discobot voice through the pad' : 'Available when Axis Stack runs inside Discobot';
+  let note = '';
+  if (disco) {
+    if (!hostSources.length) note = 'This Discobot does not share its voices with guests yet. Switch back to Samples, or see DISCOBOT-PROMPT.md in the Axis Stack repo.';
+    else if (!state.source.id) note = 'Pick a Discobot voice. It leaves Discobot\'s mix and comes back through the pad.';
+    else if (!hostSources.some(v => v.id === state.source.id)) note = 'That voice is no longer in this Discobot project. Pick another.';
+    else if (inputSel !== state.source.id) note = 'Waiting for Discobot to hand over the voice…';
+  }
+  $('#srcNote').textContent = note; $('#srcNote').hidden = !note;
   $$('#setKeys .key').forEach((b, i) => b.setAttribute('aria-pressed', i === state.cur));
   const s = curSet();
   $('#setName').textContent = s.name;
@@ -858,21 +993,35 @@ function updateRail() {
   $('#loopPlay').disabled = !s.loop; $('#loopClr').disabled = !s.loop && !rec;
   $('#holdKey').setAttribute('aria-pressed', state.settings.hold);
   $('#gateKey').setAttribute('aria-pressed', state.settings.gate === 'touch');
-  const d = sampleLoopDur(); $('#sampleLen').textContent = d ? d.toFixed(2) + ' s loop' : '—';
+  const d = sampleLoopDur(), fit = hostFit();
+  $('#sampleLen').textContent = disco ? (inputSel ? 'live' : '—') : fit.beats ? fit.beats + ' beats' : d ? d.toFixed(2) + ' s loop' : '—';
   const pb = $('#playBtn'); pb.setAttribute('aria-pressed', playing);
+  pb.disabled = isHosted; if (isHosted) pb.setAttribute('aria-label', 'Discobot runs play and stop');
   $('#playIcon').setAttribute('d', playing ? 'M6 5h4v14H6zM14 5h4v14h-4z' : 'M7 4l13 8-13 8z');
-  pb.setAttribute('aria-label', playing ? 'Stop sample loop' : 'Play sample loop');
+  if (!isHosted) pb.setAttribute('aria-label', playing ? 'Stop sample loop' : 'Play sample loop');
   $$('#gateSeg button').forEach(b => b.setAttribute('aria-pressed', b.dataset.v === state.settings.gate));
   $$('#syncSeg button').forEach(b => b.setAttribute('aria-pressed', (b.dataset.v === '1') === !!state.settings.loopSync));
 }
-function selectSample(i) { initAudio(); state.sample = i; if (srcOn) startSource(); save(); updateRail(); }
+function selectSample(i) {
+  if (state.source.mode === 'discobot') { const v = hostSources[i]; if (v) selectVoice(v.id); return; }
+  initAudio(); state.sample = i; if (srcOn) startSource(); save(); updateRail();
+}
+function selectVoice(id) { initAudio(); state.source.id = id; requestInput(); save(); updateRail(); }
+function setSourceMode(m) {
+  if (m === 'discobot' && !isHosted) return;
+  initAudio(); state.source.mode = m;
+  if (m === 'sample') { requestInput(); if (srcOn) stopSource(); } else { stopSource(); requestInput(); }
+  save(); buildRail();
+}
+$$('#srcSeg button').forEach(b => b.onclick = () => setSourceMode(b.dataset.v));
 function selectSet(i) {
   if (i === state.cur) return; state.cur = i; save();
   rebuildChain(); axisLabels(); buildReadout(); updateRail(); if (!$('#page-chains').hidden) renderChains();
 }
-function togglePlay() { initAudio(); if (state.settings.gate === 'touch') { state.settings.gate = 'latch'; } playing = !playing; save(); updateRail(); }
+function togglePlay() { if (isHosted) return; initAudio(); if (state.settings.gate === 'touch') { state.settings.gate = 'latch'; } playing = !playing; save(); updateRail(); }
 
 $('#playBtn').onclick = togglePlay;
+$('#wakeBtn').onclick = () => { initAudio(); if (ctx) ctx.resume().then(showHost, showHost); };
 $('#loopRec').onclick = toggleRec; $('#loopPlay').onclick = toggleLoopPlay; $('#loopClr').onclick = clearLoop;
 $('#holdKey').onclick = () => { state.settings.hold = !state.settings.hold; save(); updateRail(); };
 $('#gateKey').onclick = () => { initAudio(); state.settings.gate = state.settings.gate === 'touch' ? 'latch' : 'touch'; if (state.settings.gate === 'touch') playing = false; save(); updateRail(); };
@@ -1130,6 +1279,260 @@ $('#outCcX').value = state.settings.outCcX; $('#outCcY').value = state.settings.
 $('#outCcX').onchange = ev => { const v = parseInt(ev.target.value, 10); state.settings.outCcX = isNaN(v) ? -1 : clamp(v, 0, 127); ev.target.value = state.settings.outCcX >= 0 ? state.settings.outCcX : ''; save(); };
 $('#outCcY').onchange = ev => { const v = parseInt(ev.target.value, 10); state.settings.outCcY = isNaN(v) ? -1 : clamp(v, 0, 127); ev.target.value = state.settings.outCcY >= 0 ? state.settings.outCcY : ''; save(); };
 
+/* ================= Discobot guest =================
+   Discobot (https://iw978599.github.io/discobot/) can show Axis Stack in a frame as a unit in its
+   rack. Protocol v1: docs/GUEST_PROTOCOL.md in the Discobot repo. On top of v1 this page offers
+   'input': Discobot hands one of its voices to the pad, which plays it through the axis chains
+   (see DISCOBOT-PROMPT.md). Opened on its own, none of this does anything. */
+const GUEST = 1, framed = window.parent !== window;
+let hostOrigin = null, isHosted = false, latencyMs = 0, streaming = false;
+let transport = { playing: false, bpm: 120 };
+let hostSources = [], inputSel = null, wantsInputSent = undefined;
+let inExpected = null, inLateRun = 0, inWorst = 0;
+const gstats = { blocksOut: 0, blocksIn: 0, lateIn: 0 };
+window.__axisGuest = gstats;
+const wallNow = () => performance.timeOrigin + performance.now();
+function ctxAtWall(wall) {
+  const st = ctx.getOutputTimestamp ? ctx.getOutputTimestamp() : null;
+  if (st && st.performanceTime && st.contextTime) return st.contextTime + (wall - (performance.timeOrigin + st.performanceTime)) / 1000;
+  return ctx.currentTime + (wall - wallNow()) / 1000;
+}
+function wallAtCtx(time) {
+  const st = ctx.getOutputTimestamp ? ctx.getOutputTimestamp() : null;
+  if (st && st.performanceTime && st.contextTime) return performance.timeOrigin + st.performanceTime + (time - st.contextTime) * 1000;
+  return wallNow() + (time - ctx.currentTime) * 1000;
+}
+const hostPlaying = () => isHosted && transport.playing;
+// Play this much early: the host holds the sound back by the same amount.
+const lead = () => (isHosted && streaming ? latencyMs : 0);
+const beatAt = wall => transport.anchorBeat + (wall - transport.anchorWall) * transport.bpm / 60000;
+const wallOfBeat = b => transport.anchorWall + (b - transport.anchorBeat) * 60000 / transport.bpm;
+const num = (v, lo, hi) => typeof v === 'number' && Number.isFinite(v) && v >= lo && v <= hi;
+
+function gsend(msg, transfer) {
+  if (!framed) return;
+  msg.discobotGuest = GUEST;
+  try { window.parent.postMessage(msg, hostOrigin || '*', transfer || []); } catch (e) {}
+}
+
+function onTransport(m) {
+  if (m.playing === true) {
+    if (!num(m.bpm, 1, 1000) || !num(m.anchorWall, 0, Infinity) || !num(m.anchorBeat, -1e9, 1e9)) return;
+    const was = transport.playing;
+    transport = { playing: true, bpm: m.bpm, anchorWall: m.anchorWall, anchorBeat: m.anchorBeat };
+    Promise.resolve(initAudio()).then(() => {
+      if (!transport.playing) return;
+      playing = true;
+      if (state.source.mode === 'sample' && state.settings.gate !== 'touch') {
+        if (!was) startSource(wallOfBeat(Math.max(transport.anchorBeat, Math.ceil(beatAt(wallNow() + lead() + 30) - 1e-9))));
+        else if (srcOn) startSource(); // new tempo: restart in phase with the beat
+      }
+      updateRail(); showHost();
+    });
+  } else if (m.playing === false) {
+    transport = { playing: false, bpm: transport.bpm };
+    playing = false; tempoRate = 1; stopSource(); updateRail(); showHost();
+  }
+}
+
+function startStreaming() {
+  streaming = true;
+  if (!ctx || !monitor) return;
+  monitor.gain.setValueAtTime(0, ctx.currentTime);
+  if (tapNode || !workletReady) return;
+  tapNode = new AudioWorkletNode(ctx, 'axis-tap', { numberOfInputs: 1, numberOfOutputs: 1, outputChannelCount: [2] });
+  tapNode.port.onmessage = e => {
+    const d = e.data;
+    // wall: when the first sample of this block would have been heard on this page
+    gsend({ type: 'audio', wall: wallAtCtx(d.frame / ctx.sampleRate), sampleRate: ctx.sampleRate, left: d.l, right: d.r }, [d.l.buffer, d.r.buffer]);
+    gstats.blocksOut++;
+  };
+  analyser.connect(tapNode); tapNode.connect(ctx.destination); // the tap outputs silence; this keeps it running
+}
+function stopStreaming() {
+  streaming = false;
+  if (monitor) monitor.gain.setValueAtTime(1, ctx.currentTime);
+  if (tapNode) { try { analyser.disconnect(tapNode); tapNode.disconnect(); } catch (e) {} tapNode = null; }
+}
+
+// Ask Discobot for the chosen voice, or to have it back.
+function requestInput() {
+  if (!isHosted) return;
+  const want = state.source.mode === 'discobot' && state.source.id && hostSources.some(v => v.id === state.source.id) ? state.source.id : null;
+  if (want === wantsInputSent) return;
+  wantsInputSent = want;
+  if (!want) clearInput();
+  gsend({ type: 'selectInput', source: want });
+}
+function clearInput() { inExpected = null; inLateRun = 0; if (inputNode) inputNode.port.postMessage({ clear: true }); }
+function resample(a, from, to) {
+  if (from === to) return a;
+  const n = Math.max(1, Math.round(a.length * to / from)), out = new Float32Array(n), k = from / to;
+  for (let i = 0; i < n; i++) { const x = i * k, j = Math.floor(x), f = x - j; out[i] = (a[j] || 0) + ((a[Math.min(a.length - 1, j + 1)] || 0) - (a[j] || 0)) * f; }
+  return out;
+}
+// A block of a Discobot voice. `wall` is when it would have been heard in Discobot's mix. Like
+// everything else a guest plays, it is played latencyMs early, so the result lands on time.
+function pushInput(m) {
+  if (state.source.mode !== 'discobot' || !inputNode || !ctx || ctx.state !== 'running') return;
+  if (!(m.left instanceof Float32Array) || !(m.right instanceof Float32Array) || m.left.length !== m.right.length) return;
+  if (!m.left.length || m.left.length > 16384 || !num(m.wall, 0, Infinity) || !num(m.sampleRate, 8000, 192000)) return;
+  const rate = ctx.sampleRate, l = resample(m.left, m.sampleRate, rate), r = resample(m.right, m.sampleRate, rate);
+  const target = Math.round(ctxAtWall(m.wall - lead()) * rate), soonest = Math.round((ctx.currentTime + 0.01) * rate);
+  let frame = inExpected != null && Math.abs(target - inExpected) < 0.02 * rate ? inExpected : target;
+  gstats.blocksIn++;
+  if (frame < soonest) {
+    gstats.lateIn++; inLateRun++; inWorst = Math.max(inWorst, (soonest - frame) / rate);
+    frame = Math.max(soonest, inExpected ?? 0);
+    if (inLateRun >= 4) { gsend({ type: 'inputLate', ms: Math.round(inWorst * 1000) }); inLateRun = 0; inWorst = 0; }
+  } else { inLateRun = 0; inWorst = 0; }
+  if (frame > soonest + 2.5 * rate) return; // far beyond anything sensible: drop it
+  inExpected = frame + l.length;
+  inputNode.port.postMessage({ frame, l, r }, [l.buffer, r.buffer]);
+}
+
+// ---- settings: whatever puts the pad back exactly; kept by Discobot per scene
+const r3 = v => Math.round(v * 1000) / 1000;
+function captureState() {
+  const out = {
+    v: 1, cur: state.cur, sample: state.sample, source: { mode: state.source.mode, id: state.source.id },
+    gate: state.settings.gate, loopSync: !!state.settings.loopSync, hold: !!state.settings.hold,
+    loopPoints: samples.map(s => s.builtin ? [r3(s.loopStart), r3(s.loopEnd)] : null),
+    sets: state.sets.map(s => ({
+      name: s.name, route: s.route, restX: r3(s.restX), restY: r3(s.restY),
+      x: s.x.map(e => ({ type: e.type, param: e.param, lo: e.lo, hi: e.hi, curve: e.curve, on: e.on, fixed: e.fixed, opts: e.opts })),
+      y: s.y.map(e => ({ type: e.type, param: e.param, lo: e.lo, hi: e.hi, curve: e.curve, on: e.on, fixed: e.fixed, opts: e.opts })),
+      loopOn: !!s.loopOn,
+      loop: s.loop ? { unit: s.loop.unit || 's', len: s.loop.len, start: s.loop.start || 0, pts: s.loop.pts.map(p => [r3(p[0]), r3(p[1]), r3(p[2]), p[3] ? 1 : 0]) } : null,
+    })),
+  };
+  // the host keeps at most 100,000 characters: thin long gesture loops until it fits
+  for (let i = 0; i < 8 && JSON.stringify(out).length > 95000; i++) out.sets.forEach(s => { if (s.loop) s.loop.pts = s.loop.pts.filter((_, j) => j % 2 === 0); });
+  return out;
+}
+function cleanEntry(e) {
+  if (!e || typeof e !== 'object' || !FX[e.type]) return null;
+  const d = FX[e.type], param = d.params[e.param] ? e.param : Object.keys(d.params)[0], pd = d.params[param];
+  const lim = v => num(v, -1e9, 1e9) ? clamp(v, pd.min, pd.max) : null;
+  const fixed = {}, opts = {};
+  if (e.fixed && typeof e.fixed === 'object') for (const k in d.params) if (k !== param && num(e.fixed[k], -1e9, 1e9)) fixed[k] = clamp(e.fixed[k], d.params[k].min, d.params[k].max);
+  if (e.opts && typeof e.opts === 'object') for (const k in (d.opts || {})) if (d.opts[k].values.includes(e.opts[k])) opts[k] = e.opts[k];
+  return { id: uid(), type: e.type, param, lo: lim(e.lo) ?? pd.min, hi: lim(e.hi) ?? pd.max, curve: CURVES[e.curve] ? e.curve : 'lin', on: e.on !== false, fixed, opts };
+}
+function cleanSet(s, i) {
+  if (!s || typeof s !== 'object') return null;
+  const out = {
+    name: typeof s.name === 'string' && s.name.trim() ? s.name.slice(0, 14) : 'Set ' + 'ABCD'[i],
+    route: s.route === 'yx' ? 'yx' : 'xy',
+    restX: num(s.restX, 0, 1) ? s.restX : 0, restY: num(s.restY, 0, 1) ? s.restY : 0,
+    x: (Array.isArray(s.x) ? s.x : []).slice(0, 12).map(cleanEntry).filter(Boolean),
+    y: (Array.isArray(s.y) ? s.y : []).slice(0, 12).map(cleanEntry).filter(Boolean),
+    loop: null, loopOn: false,
+  };
+  const L = s.loop;
+  if (L && typeof L === 'object' && num(L.len, 0.01, 3600) && Array.isArray(L.pts)) {
+    const pts = L.pts.slice(0, 20000).filter(p => Array.isArray(p) && num(p[0], 0, 1e6) && num(p[1], 0, 1) && num(p[2], 0, 1)).map(p => [p[0], p[1], p[2], p[3] ? 1 : 0]);
+    if (pts.length) { out.loop = { unit: L.unit === 'beat' ? 'beat' : 's', len: L.len, start: num(L.start, -1e9, 1e9) ? L.start : 0, pts }; out.loopOn = !!s.loopOn; out.loopT0 = performance.now(); }
+  }
+  return out;
+}
+const chainSig = set => JSON.stringify([set.route, ...['x', 'y'].map(ax => set[ax].map(e => [e.type, e.param, e.on, optsOf(e)]))]);
+// Arrives whenever another Discobot scene opens, also during playback a little before the bar
+// line: apply it without stopping, and without writing to this browser's own storage.
+function applyState(st) {
+  if (!st || typeof st !== 'object') return;
+  const before = chainSig(curSet()), oldSample = state.sample, oldMode = state.source.mode;
+  if (Array.isArray(st.sets) && st.sets.length === 4) state.sets = st.sets.map((s, i) => cleanSet(s, i) || state.sets[i]);
+  if (Number.isInteger(st.cur) && st.cur >= 0 && st.cur < 4) state.cur = st.cur;
+  if (Number.isInteger(st.sample) && st.sample >= 0 && st.sample < 4) state.sample = st.sample;
+  if (st.source && typeof st.source === 'object') {
+    state.source.mode = st.source.mode === 'discobot' ? 'discobot' : 'sample';
+    state.source.id = typeof st.source.id === 'string' ? st.source.id.slice(0, 64) : null;
+  }
+  if (st.gate === 'touch' || st.gate === 'latch') state.settings.gate = st.gate;
+  if (typeof st.loopSync === 'boolean') state.settings.loopSync = st.loopSync;
+  if (typeof st.hold === 'boolean') state.settings.hold = st.hold;
+  if (Array.isArray(st.loopPoints)) st.loopPoints.forEach((lp, i) => {
+    const s = samples[i]; if (!s || !s.builtin || !Array.isArray(lp) || !num(lp[0], 0, 1) || !num(lp[1], 0, 1) || lp[1] <= lp[0]) return;
+    s.loopStart = lp[0]; s.loopEnd = lp[1];
+  });
+  rec = null;
+  if (ctx) {
+    if (chainSig(curSet()) !== before) rebuildChain();
+    else {
+      const s = curSet(), order = s.route === 'yx' ? [...s.y, ...s.x] : [...s.x, ...s.y], on = order.filter(e => e.on);
+      live.forEach((m, i) => { if (on[i]) { m.e = on[i]; refreshFixed(m.e); } });
+    }
+    if (state.source.mode === 'sample' && (state.sample !== oldSample || oldMode !== 'sample') && (srcOn || (playing && state.settings.gate !== 'touch'))) startSource();
+  }
+  requestInput();
+  buildRail(); axisLabels(); buildReadout();
+  if (!$('#page-chains').hidden) renderChains();
+  if (!$('#page-setup').hidden) renderSamples();
+}
+
+function cleanSources(list) {
+  if (!Array.isArray(list)) return [];
+  const seen = new Set(), out = [];
+  for (const v of list.slice(0, 64)) {
+    if (!v || typeof v.id !== 'string' || !v.id || v.id.length > 64 || seen.has(v.id)) continue;
+    seen.add(v.id);
+    out.push({ id: v.id, name: typeof v.name === 'string' && v.name ? v.name.slice(0, 40) : v.id, kind: ['synth', 'drums', 'drum', 'guest', 'mix'].includes(v.kind) ? v.kind : 'other' });
+  }
+  return out;
+}
+
+window.addEventListener('message', ev => {
+  if (!framed || ev.source !== window.parent) return;
+  const m = ev.data;
+  if (!m || typeof m !== 'object' || m.discobotGuest !== GUEST || typeof m.type !== 'string') return;
+  if (hostOrigin && ev.origin !== hostOrigin) return;
+  hostOrigin = ev.origin;
+  switch (m.type) {
+    case 'hello':
+      if (m.host !== 'discobot') return;
+      isHosted = true; latencyMs = num(m.latencyMs, 0, 5000) ? m.latencyMs : 120;
+      wantsInputSent = undefined; requestInput(); buildRail(); break;
+    case 'transport': if (isHosted) onTransport(m); break;
+    case 'getState': if (isHosted && typeof m.id === 'string') gsend({ type: 'state', id: m.id, state: captureState() }); break;
+    case 'setState': if (isHosted) applyState(m.state); break;
+    case 'audio':
+      if (!isHosted) return;
+      if (m.on === true) { streaming = true; Promise.resolve(initAudio()).then(() => { if (streaming) startStreaming(); showHost(); }); }
+      else if (m.on === false) stopStreaming();
+      break;
+    case 'sources':
+      if (!isHosted) return;
+      hostSources = cleanSources(m.sources);
+      wantsInputSent = undefined; requestInput(); buildRail(); break;
+    case 'inputSelected':
+      if (!isHosted) return;
+      inputSel = typeof m.source === 'string' ? m.source : null;
+      if (!inputSel) clearInput();
+      updateRail(); break;
+    case 'input': if (isHosted && m.source === inputSel) pushInput(m); return;
+    default: return;
+  }
+  showHost();
+});
+
+function showHost() {
+  const chip = $('#hostChip'), st = $('#dbStatus');
+  chip.hidden = !isHosted;
+  if (isHosted) $('#hostChipText').textContent = 'Discobot · ' + (transport.playing ? Math.round(transport.bpm * 10) / 10 + ' BPM ▸' : 'stopped');
+  let t;
+  if (!framed) t = 'Not inside Discobot. Opened on its own, Axis Stack plays its own samples.';
+  else if (!isHosted) t = 'In a frame, waiting for Discobot to say hello.';
+  else {
+    t = `Connected to Discobot at ${hostOrigin}. ` + (transport.playing ? `Playing at ${Math.round(transport.bpm * 10) / 10} BPM. ` : 'Stopped. ');
+    t += streaming ? 'The sound goes to Discobot\'s mixer. ' : '';
+    t += hostSources.length ? `${hostSources.length} Discobot voices are available as a source.` : 'This Discobot does not share its voices yet, so the pad plays its own samples.';
+  }
+  st.textContent = t; st.classList.toggle('ok', isHosted);
+  $('#wakeBtn').hidden = !(isHosted && ctx && ctx.state !== 'running');
+}
+setInterval(() => { if (isHosted && ctx) $('#wakeBtn').hidden = ctx.state === 'running'; }, 500);
+
 /* ================= pages, theme, keys ================= */
 function showPage(p) {
   $$('.tabs button').forEach(b => b.setAttribute('aria-selected', b.dataset.page === p));
@@ -1174,15 +1577,17 @@ onThemeChange();
 buildRail(); axisLabels(); buildReadout();
 let startPage = 'pad'; try { startPage = location.hash.slice(1) || localStorage.getItem('axis-stack-page') || 'pad'; } catch (e) {}
 if (!['pad', 'chains', 'setup'].includes(startPage)) startPage = 'pad';
-requestAnimationFrame(frame);
+setInterval(tick, 15);
+requestAnimationFrame(draw);
 // generate the built-in loops after first paint
 setTimeout(() => {
   samples.forEach((s, i) => makeBuiltin(i));
   Object.keys(state.loops || {}).forEach(k => { const s = samples[k], l = state.loops[k]; if (s && l) { s.loopStart = l[0]; s.loopEnd = l[1]; } });
   buildRail(); showPage(startPage);
   if (state.settings.midiOn && navigator.requestMIDIAccess) enableMidi();
+  gsend({ type: 'ready', name: 'Axis Stack', features: ['transport', 'state', 'audio', 'input'] });
 }, 30);
-showPage(startPage);
+showPage(startPage); showHost();
 })();
 </script>
 </body>

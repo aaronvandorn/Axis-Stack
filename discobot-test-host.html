@@ -1,0 +1,169 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Axis Stack · Discobot stand-in</title>
+<style>
+/* A stand-in for Discobot's side of the guest protocol, for trying Axis Stack without Discobot.
+   It is not Discobot: its "voices" are three small test sounds made here. */
+:root{--bg:#161814;--panel:#21241e;--well:#10120e;--line:#3a3f34;--ink:#ece5d3;--muted:#9c9d89;--accent:#dc8a50;--ok:#80c7b5;color-scheme:dark}
+@media (prefers-color-scheme:light){:root{--bg:#eef2f6;--panel:#ffffff;--well:#dde3ea;--line:#c4ccd6;--ink:#1f2733;--muted:#64707f;--accent:#3b76b3;--ok:#157f78;color-scheme:light}}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--ink);font:15px/1.4 'Barlow Condensed','Arial Narrow',sans-serif}
+header{display:flex;flex-wrap:wrap;gap:10px 16px;align-items:center;padding:10px 16px;border-bottom:1px solid var(--line);background:var(--panel)}
+h1{font-size:18px;letter-spacing:.12em;text-transform:uppercase;margin:0 auto 0 0}
+button,input,select{font:inherit;color:inherit}
+button{background:var(--well);border:1px solid var(--line);border-radius:4px;padding:5px 11px;cursor:pointer}
+button[aria-pressed="true"]{border-color:var(--accent);color:var(--accent)}
+label{display:flex;gap:6px;align-items:center;color:var(--muted)}
+input[type=number]{width:6ch;background:var(--well);border:1px solid var(--line);border-radius:4px;padding:4px 6px}
+#stats{font:12px/1.5 ui-monospace,Menlo,monospace;color:var(--muted);padding:6px 16px;white-space:pre-wrap;border-bottom:1px solid var(--line)}
+iframe{display:block;width:100%;height:calc(100vh - 120px);border:0}
+</style>
+</head>
+<body>
+<header>
+  <h1>Discobot stand-in</h1>
+  <button id="play" aria-pressed="false">Play All</button>
+  <label>BPM <input type="number" id="bpm" value="120" min="20" max="400"></label>
+  <button id="audio" aria-pressed="true">Sound through host</button>
+  <button id="voices" aria-pressed="true">Share voices</button>
+  <button id="click" aria-pressed="true">Host click</button>
+  <button id="recall">Recall saved settings</button>
+</header>
+<div id="stats">Waiting for the guest…</div>
+<iframe id="guest" src="./" allow="autoplay; midi"></iframe>
+<script>
+(() => {
+'use strict';
+const P = 1, LATENCY = 120, LEAD = 260, SR = 48000, BLOCK = 1024;
+const frame = document.getElementById('guest'), $ = id => document.getElementById(id);
+const wallNow = () => performance.timeOrigin + performance.now();
+let ctx = null, guestReady = false, features = [], transport = { playing: false }, saved = null, selected = null, genWall = 0;
+let audioOn = true, voicesOn = true, clickOn = true, nextClick = 0, expected = null;
+const stats = { audioIn: 0, lateIn: 0, inputOut: 0, states: 0, inputLate: 0 };
+window.__host = stats;
+
+const VOICES = [
+  { id: 'synth:1', name: 'Synth 1 · Saw lead', kind: 'synth' },
+  { id: 'synth:2', name: 'Synth 2 · Pad', kind: 'synth' },
+  { id: 'drums', name: 'Drums', kind: 'drums' },
+  { id: 'drum:kick', name: 'Kick', kind: 'drum' },
+  { id: 'drum:snare', name: 'Snare', kind: 'drum' },
+  { id: 'drum:closedHH', name: 'Closed hat', kind: 'drum' },
+];
+const send = (m, t) => { m.discobotGuest = P; frame.contentWindow.postMessage(m, location.origin, t || []); };
+const beatAt = w => transport.anchorBeat + (w - transport.anchorWall) * transport.bpm / 60000;
+const wallOfBeat = b => transport.anchorWall + (b - transport.anchorBeat) * 60000 / transport.bpm;
+function ctxAtWall(w) { const s = ctx.getOutputTimestamp(); if (s.performanceTime && s.contextTime) return s.contextTime + (w - (performance.timeOrigin + s.performanceTime)) / 1000; return ctx.currentTime + (w - wallNow()) / 1000; }
+
+window.addEventListener('message', ev => {
+  if (ev.source !== frame.contentWindow) return;
+  const m = ev.data; if (!m || m.discobotGuest !== P) return;
+  if (m.type === 'ready') {
+    guestReady = true; features = Array.isArray(m.features) ? m.features : [];
+    send({ type: 'hello', host: 'discobot', latencyMs: LATENCY });
+    if (features.includes('input') && voicesOn) send({ type: 'sources', sources: VOICES });
+    send({ type: 'audio', on: audioOn });
+    if (saved) send({ type: 'setState', state: saved });
+    if (transport.playing) send({ type: 'transport', ...transport });
+  } else if (m.type === 'state') { saved = m.state; stats.states++; }
+  else if (m.type === 'stateChanged') askState();
+  else if (m.type === 'audio') playGuest(m);
+  else if (m.type === 'selectInput') {
+    selected = voicesOn && VOICES.some(v => v.id === m.source) ? m.source : null;
+    genWall = wallNow() + LEAD; send({ type: 'inputSelected', source: selected });
+  } else if (m.type === 'inputLate') stats.inputLate++;
+  show();
+});
+function askState() { if (guestReady) send({ type: 'getState', id: String(Date.now()) }); }
+setInterval(askState, 3000);
+
+function ensureCtx() { if (!ctx) ctx = new AudioContext({ sampleRate: SR }); if (ctx.state !== 'running') ctx.resume(); }
+// The guest's sound: placed latencyMs after the time it carries, as Discobot does.
+function playGuest(m) {
+  if (!ctx || !(m.left instanceof Float32Array)) return;
+  stats.audioIn++;
+  const b = ctx.createBuffer(2, m.left.length, m.sampleRate); b.copyToChannel(m.left, 0); b.copyToChannel(m.right, 1);
+  let t = ctxAtWall(m.wall + LATENCY);
+  if (expected != null && Math.abs(t - expected) < 0.02) t = expected;
+  if (t < ctx.currentTime + 0.005) { stats.lateIn++; t = Math.max(ctx.currentTime + 0.005, expected || 0); }
+  expected = t + b.duration;
+  const s = ctx.createBufferSource(); s.buffer = b; s.connect(ctx.destination); s.start(t);
+}
+
+// ---- the stand-in voices, rendered LEAD ms before they are due, stamped with when they are due
+const mtof = n => 440 * Math.pow(2, (n - 69) / 12);
+let ph = [0, 0, 0, 0], noiseLP = 0;
+function voiceSample(id, w) {
+  if (!transport.playing) return 0;
+  const b = beatAt(w); if (b < 0) return 0;
+  const st = b * 4, step = Math.floor(st), inStep = (st - step) * 15 / transport.bpm; // seconds into the 16th
+  const inBeat = (b - Math.floor(b)) * 60 / transport.bpm, beat = Math.floor(b);
+  const kick = () => { ph[2] += (45 + 110 * Math.exp(-inBeat * 30)) / SR; return Math.sin(2 * Math.PI * ph[2]) * Math.exp(-inBeat * 7); };
+  const snare = () => (beat % 2 === 1 ? ((Math.random() * 2 - 1) * 0.6 + Math.sin(2 * Math.PI * 190 * inBeat) * 0.4) * Math.exp(-inBeat * 18) : 0);
+  const hat = () => { const n = Math.random() * 2 - 1, h = n - noiseLP; noiseLP = n; return h * 0.4 * Math.exp(-((st * 0.5 % 1) * 30 / transport.bpm) * 70); };
+  switch (id) {
+    case 'synth:1': { const arp = [57, 60, 64, 69, 72, 69, 64, 60]; ph[0] += mtof(arp[step % 8]) / SR; ph[0] %= 1; return (2 * ph[0] - 1) * 0.35 * Math.exp(-inStep * 9); }
+    case 'synth:2': { let y = 0; [57, 64, 67, 72].forEach((n, i) => { y += Math.sin(2 * Math.PI * mtof(n) * w / 1000 + i); }); return y * 0.12; }
+    case 'drum:kick': return kick() * 0.8;
+    case 'drum:snare': return snare() * 0.6;
+    case 'drum:closedHH': return hat();
+    case 'drums': return kick() * 0.6 + snare() * 0.45 + hat() * 0.8;
+  }
+  return 0;
+}
+setInterval(() => {
+  if (!selected || !guestReady) return;
+  if (genWall < wallNow()) genWall = wallNow() + LEAD; // fell behind (tab was hidden): start again
+  while (genWall < wallNow() + LEAD) {
+    const l = new Float32Array(BLOCK), r = new Float32Array(BLOCK);
+    for (let i = 0; i < BLOCK; i++) { const v = voiceSample(selected, genWall + i * 1000 / SR); l[i] = v; r[i] = v; }
+    send({ type: 'input', source: selected, wall: genWall, sampleRate: SR, left: l, right: r }, [l.buffer, r.buffer]);
+    stats.inputOut++; genWall += BLOCK * 1000 / SR;
+  }
+}, 10);
+
+// host click on every beat, to hear whether the guest lands with it
+setInterval(() => {
+  if (!ctx || !transport.playing || !clickOn) return;
+  while (wallOfBeat(nextClick) < wallNow() + 200) {
+    const t = ctxAtWall(wallOfBeat(nextClick)); if (t > ctx.currentTime) {
+      const o = ctx.createOscillator(), g = ctx.createGain(); o.frequency.value = nextClick % 4 ? 1500 : 2200;
+      g.gain.setValueAtTime(0.18, t); g.gain.exponentialRampToValueAtTime(0.001, t + 0.03); o.connect(g).connect(ctx.destination); o.start(t); o.stop(t + 0.04);
+    }
+    nextClick++;
+  }
+}, 25);
+
+$('play').onclick = () => {
+  ensureCtx();
+  if (transport.playing) { transport = { playing: false }; send({ type: 'transport', playing: false }); }
+  else { transport = { playing: true, bpm: +$('bpm').value || 120, anchorWall: wallNow() + 330, anchorBeat: 0 }; nextClick = 0; send({ type: 'transport', ...transport }); }
+  $('play').setAttribute('aria-pressed', transport.playing); $('play').textContent = transport.playing ? 'Stop All' : 'Play All'; show();
+};
+$('bpm').onchange = () => {
+  const bpm = Math.min(400, Math.max(20, +$('bpm').value || 120));
+  if (!transport.playing) return;
+  const w = wallNow() + 50, b = beatAt(w);
+  transport = { playing: true, bpm, anchorWall: w, anchorBeat: b }; nextClick = Math.ceil(b); send({ type: 'transport', ...transport }); show();
+};
+$('audio').onclick = () => { audioOn = !audioOn; $('audio').setAttribute('aria-pressed', audioOn); send({ type: 'audio', on: audioOn }); };
+$('voices').onclick = () => {
+  voicesOn = !voicesOn; $('voices').setAttribute('aria-pressed', voicesOn);
+  if (!voicesOn) { selected = null; send({ type: 'inputSelected', source: null }); }
+  send({ type: 'sources', sources: voicesOn ? VOICES : [] });
+};
+$('click').onclick = () => { clickOn = !clickOn; $('click').setAttribute('aria-pressed', clickOn); };
+$('recall').onclick = () => { if (saved) send({ type: 'setState', state: saved }); };
+function show() {
+  $('stats').textContent = (guestReady ? 'Guest connected (' + features.join(', ') + ')' : 'Waiting for the guest…') +
+    ` · ${transport.playing ? 'playing ' + transport.bpm + ' BPM' : 'stopped'} · voice handed over: ${selected || 'none'}` +
+    `\nguest audio blocks in: ${stats.audioIn} (late ${stats.lateIn}) · voice blocks out: ${stats.inputOut} · guest says late: ${stats.inputLate} · settings saved: ${stats.states}`;
+}
+setInterval(show, 500);
+})();
+</script>
+</body>
+</html>
