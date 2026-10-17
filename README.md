@@ -14,6 +14,12 @@ A Kaoss Pad–style XY performance pad for phone, tablet and desktop browsers, w
 - **Setup page:** load your own audio into any slot and set loop points, MIDI Learn for X/Y/touch and every button, and MIDI CC output of the pad position.
 - Dark hardware-console theme by default, with a Light/Dark toggle.
 
+## Record & export
+
+The **Record & export** group at the bottom of the Pad page saves WAV and/or MIDI. The MIDI file holds the pad's movement as two controller lanes (the X and Y CC numbers and channel set under MIDI, 12 and 13 by default), starting from wherever the pad sat when the take began, plus a held note for the sample that was sounding (60 for slot 1, 61 for slot 2, and so on). Takes are measured in seconds.
+
+While the app's sound is on, the last 48 seconds of what it plays (audio and notes) are kept in memory. **Save last N** takes what just played; **Record next N** starts recording now. With a bar grid running it works in bars (1 to 16), cut on exact bar lines so takes loop seamlessly; otherwise in seconds (5 to 45). Tick **WAV** for exactly what you heard, **MIDI** for the notes, or both for one .zip with the two files. Nothing is uploaded. This comes from the shared `jam-clips.js` module (the `JAM-CLIPS` block in `index.html`), which every app in the set uses.
+
 ## Discobot guest
 
 Axis Stack can sit in the rack of [Discobot](https://iw978599.github.io/discobot/), a browser sequencer and drum machine, as a guest instrument. In Discobot choose **Project → Add Guest Instrument** and paste `https://aaronvandorn.github.io/Axis-Stack/`. Discobot then:
