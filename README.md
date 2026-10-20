@@ -9,10 +9,22 @@ A Kaoss Pad–style XY performance pad for phone, tablet and desktop browsers, w
 - **Pad:** a two-axis touch surface that plays a looping sample through effect chains driven by X and Y.
 - **Stacked axes:** each axis drives any number of effects at once, each with its own range, curve and fixed settings. For example, Y bends pitch ±12 semitones while a low-pass filter on the same axis opens wider the further the pitch is bent.
 - **Chains page:** build and reorder the effect chain for each axis. You can also move effects between axes and set which chain the audio passes through first.
-- **Side controls:** a source switch (4 sample slots, or Discobot voices when hosted), 4 axis sets (A–D), a control loop (record, play and erase pad gestures, optionally snapped to the sample loop), Hold, and a touch-to-sound mode.
+- **Side controls:** a source switch (4 sample slots, tapes from Tape Loop Deck, or Discobot voices when hosted), 4 axis sets (A–D), a control loop (record, play and erase pad gestures, optionally snapped to the sample loop), Hold, and a touch-to-sound mode.
 - **Effects:** pitch, filter (LP/HP/BP/notch), drive, bitcrush, delay, reverb, chop/gate, ring mod, flanger, pan, level.
 - **Setup page:** load your own audio into any slot and set loop points, MIDI Learn for X/Y/touch and every button, and MIDI CC output of the pad position.
 - Dark hardware-console theme by default, with a Light/Dark toggle.
+
+## Tapes from Tape Loop Deck
+
+Open [Tape Loop Deck](https://aaronvandorn.github.io/Tape-Loop-Deck/) in another tab of the same browser and set **Source → Deck** on the Pad page. Every tape on the deck shows up as a key; pick one and the pad plays a copy of it, locked to the deck, through the axis chains. The deck keeps playing its own tape, so the pad layers on top.
+
+- The copy starts and stops with the deck, follows the tape's speed and any edits, and goes quiet while the deck mutes the tape (mute, solo or a pattern switch, timed to land on the same line).
+- Pitch on the pad goes through the pitch shifter rather than the playback speed, so the copy never slips off the deck's time.
+- **Play** sounds or silences the copy; **Touch** sounds it only while you touch the pad. Keys `1`–`4` pick the first four tapes.
+- If the deck is reloaded, the pad finds the tape again by name.
+- In a MIDI export the copy is a held note from 64 up, in the deck's tape order.
+
+This uses the shared `deck-link.js` module (the `DECK-LINK` block in `index.html`). Same browser and same site only.
 
 ## Record & export
 

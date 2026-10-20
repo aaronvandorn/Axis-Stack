@@ -234,6 +234,7 @@ td .mono{font-size:13px}
           <div class="group-head"><span>Source</span><em id="sampleLen">—</em></div>
           <div class="srcseg" id="srcSeg" role="group" aria-label="Sound source">
             <button id="srcSample" data-v="sample" aria-pressed="true">Samples</button>
+            <button id="srcDeck" data-v="deck" aria-pressed="false">Deck</button>
             <button id="srcDisco" data-v="discobot" aria-pressed="false">Discobot</button>
           </div>
           <div class="keys" id="sampleKeys"></div>
@@ -955,6 +956,156 @@ td .mono{font-size:13px}
                       KEEP_SEC: KEEP_SEC, MAX_BARS: MAX_BARS };
 })(typeof window !== 'undefined' ? window : globalThis);
 </script>
+<script id="deck-link">
+/* ===== DECK LINK — Tape Loop Deck shares its tapes with other apps in the ecosystem =====
+   One identical copy of this block is embedded in each app that uses it (between the DECK-LINK
+   markers); deck-link.js is the source copy. Same browser, same origin, any number of tabs.
+
+   Tape Loop Deck is the *deck*. Any app can be a *taker* (Axis Stack is the first): it lists the
+   tapes on every open deck, picks one, gets that tape's loop audio once, and plays its own copy
+   locked to the deck — so the copy can go through the taker's effects while the deck plays on.
+
+   Time is the shared wall clock in ms: performance.timeOrigin + performance.now(), meaning the
+   moment a sound is *heard*. Each app maps it to its own AudioContext with getOutputTimestamp(),
+   so two tabs on one computer line up to within a few milliseconds.
+
+   Deck:
+     const dl = DeckLink.deck({
+       title: 'Tape Loop Deck',
+       tapes: () => [ { id, name, ver, len, speed, playing, anchorWall, anchorPhase, on, onAt, fadeMs } ],
+       audio: id => ({ ver, sampleRate, left, right }) | null,   // the tape's whole loop, as heard
+       onTakers: map => {}                                        // { tapeId: ['Axis Stack', ...] }
+     });
+     dl.changed()     // tapes, timing or on/off changed: tell takers now (it also repeats every second)
+
+     Per tape: len is the loop's length in seconds of audio, speed its playback rate; the loop is at
+     anchorPhase seconds (of audio) at wall time anchorWall, and runs on at speed. ver changes
+     whenever the audio itself changes. on is whether the deck is sounding it (mute, solo, patterns);
+     onAt is the wall time that state takes effect (it may be just ahead), fadeMs how long it ramps.
+
+   Taker:
+     const tk = DeckLink.taker({ app: 'axis', title: 'Axis Stack',
+       onDecks: decks => {},           // [{ id, title, tapes: [...] }] whenever anything changes
+       onAudio: msg => {} });          // { deck, tape, ver, sampleRate, left, right }
+     tk.use(deckId, tapeId)            // or tk.use(null): which tape this app is playing
+     tk.fetch(deckId, tapeId, ver)     // ask for a tape's audio (answered by onAudio)
+     tk.phaseAt(tape, wall)            // where a tape's loop is (seconds of audio) at wall time
+
+   Messages: { dv:1, from, kind, ... } on channel CHANNEL.
+     deck  -> all   deck    { title, tapes }                 heartbeat and on every change
+     taker -> all   taker   { title, uses: { deckId, tapeId } | null }   heartbeat
+     taker -> deck  want    { to, tape, ver, reqId }
+     deck  -> taker audio   { to, reqId, tape, ver, sampleRate, left, right }
+     either -> all  bye */
+(function(global){
+  'use strict';
+  if(global.DeckLink) return;
+  var CHANNEL = 'aaronvandorn-deck-v1', DV = 1;
+  var HB_MS = 1000, TTL_MS = 4000;
+  function rid(){ return Math.random().toString(36).slice(2, 10); }
+  function wallNow(){ return performance.timeOrigin + performance.now(); }
+  function fin(v, lo, hi){ return typeof v === 'number' && isFinite(v) && v >= lo && v <= hi; }
+  function open(onMsg){
+    if(typeof BroadcastChannel === 'undefined') return null;
+    var ch = new BroadcastChannel(CHANNEL);
+    ch.onmessage = function(e){ var m = e.data; if(m && m.dv === DV && typeof m.kind === 'string' && typeof m.from === 'string') onMsg(m); };
+    return ch;
+  }
+  function cleanTape(t){
+    if(!t || (typeof t.id !== 'string' && typeof t.id !== 'number')) return null;
+    if(!fin(t.len, 0.001, 36000) || !fin(t.speed, 0.01, 100)) return null;
+    return {
+      id: String(t.id).slice(0, 40), name: String(t.name || 'Tape').slice(0, 60), ver: String(t.ver == null ? '' : t.ver).slice(0, 40),
+      len: t.len, speed: t.speed, playing: !!t.playing,
+      anchorWall: fin(t.anchorWall, 0, Infinity) ? t.anchorWall : 0, anchorPhase: fin(t.anchorPhase, 0, 36000) ? t.anchorPhase : 0,
+      on: t.on !== false, onAt: fin(t.onAt, 0, Infinity) ? t.onAt : 0, fadeMs: fin(t.fadeMs, 0, 60000) ? t.fadeMs : 0
+    };
+  }
+  function phaseAt(t, wall){
+    if(!t || !t.playing) return 0;
+    var p = (t.anchorPhase + (wall - t.anchorWall) / 1000 * t.speed) % t.len;
+    return p < 0 ? p + t.len : p;
+  }
+
+  function deck(o){
+    var id = rid(), ch = null, takers = {}, hb = 0, lastTakers = '';
+    function post(m){ if(!ch) return; m.dv = DV; m.from = id; try{ ch.postMessage(m); }catch(e){} }
+    function tapes(){ var a = []; try{ a = o.tapes() || []; }catch(e){} return a.map(cleanTape).filter(Boolean); }
+    function changed(){ if(ch) post({ kind:'deck', title: o.title || 'Tape Loop Deck', tapes: tapes() }); }
+    function sweep(){
+      var now = Date.now(), map = {};
+      Object.keys(takers).forEach(function(k){
+        var t = takers[k];
+        if(now - t.seen > TTL_MS){ delete takers[k]; return; }
+        if(t.uses && t.uses.deckId === id){ (map[t.uses.tapeId] = map[t.uses.tapeId] || []).push(t.title); }
+      });
+      var sig = JSON.stringify(map);
+      if(sig !== lastTakers){ lastTakers = sig; try{ o.onTakers && o.onTakers(map); }catch(e){} }
+    }
+    function onMsg(m){
+      if(m.kind === 'taker'){
+        var u = m.uses && typeof m.uses === 'object' ? { deckId: String(m.uses.deckId), tapeId: String(m.uses.tapeId) } : null;
+        var fresh = !takers[m.from];
+        takers[m.from] = { title: String(m.title || 'An app').slice(0, 40), uses: u, seen: Date.now() };
+        sweep();
+        if(fresh) changed();
+      } else if(m.kind === 'bye'){ if(takers[m.from]){ delete takers[m.from]; sweep(); } }
+      else if(m.kind === 'want' && m.to === id){
+        var a = null; try{ a = o.audio(String(m.tape)); }catch(e){}
+        if(!a || !a.left) return;
+        post({ kind:'audio', to: m.from, reqId: m.reqId, tape: String(m.tape), ver: String(a.ver), sampleRate: a.sampleRate, left: a.left, right: a.right || a.left });
+      }
+    }
+    ch = open(onMsg);
+    if(ch){
+      hb = setInterval(function(){ changed(); sweep(); }, HB_MS);
+      setTimeout(changed, 50);
+      addEventListener('pagehide', function(){ post({ kind:'bye' }); });
+    }
+    return { id: id, changed: changed, active: !!ch, takers: function(){ return takers; } };
+  }
+
+  function taker(o){
+    var id = rid(), ch = null, decks = {}, uses = null, sig = '';
+    function post(m){ if(!ch) return; m.dv = DV; m.from = id; try{ ch.postMessage(m); }catch(e){} }
+    function hello(){ post({ kind:'taker', title: o.title || o.app || 'App', uses: uses }); }
+    function list(){
+      var now = Date.now();
+      return Object.keys(decks).filter(function(k){ return now - decks[k].seen <= TTL_MS; })
+        .map(function(k){ return { id: k, title: decks[k].title, tapes: decks[k].tapes }; });
+    }
+    function emit(force){
+      var l = list(), s = JSON.stringify(l);
+      if(force || s !== sig){ sig = s; try{ o.onDecks && o.onDecks(l); }catch(e){} }
+    }
+    function onMsg(m){
+      if(m.kind === 'deck'){
+        var ts = Array.isArray(m.tapes) ? m.tapes.slice(0, 256).map(cleanTape).filter(Boolean) : [];
+        decks[m.from] = { title: String(m.title || 'Tape Loop Deck').slice(0, 40), tapes: ts, seen: Date.now() };
+        emit();
+      } else if(m.kind === 'bye'){ if(decks[m.from]){ delete decks[m.from]; emit(); } }
+      else if(m.kind === 'audio' && m.to === id){
+        if(!(m.left instanceof Float32Array) || !fin(m.sampleRate, 3000, 768000)) return;
+        var right = m.right instanceof Float32Array && m.right.length === m.left.length ? m.right : m.left;
+        try{ o.onAudio && o.onAudio({ deck: m.from, tape: String(m.tape), ver: String(m.ver), sampleRate: m.sampleRate, left: m.left, right: right }); }catch(e){}
+      }
+    }
+    ch = open(onMsg);
+    if(ch){
+      setInterval(function(){ hello(); emit(); }, HB_MS);
+      hello();
+      addEventListener('pagehide', function(){ post({ kind:'bye' }); });
+    }
+    return {
+      id: id, active: !!ch, decks: list, phaseAt: phaseAt, wallNow: wallNow,
+      use: function(deckId, tapeId){ var u = deckId && tapeId != null ? { deckId: String(deckId), tapeId: String(tapeId) } : null; if(JSON.stringify(u) !== JSON.stringify(uses)){ uses = u; hello(); } },
+      fetch: function(deckId, tapeId, ver){ post({ kind:'want', to: deckId, tape: String(tapeId), ver: String(ver || ''), reqId: rid() }); }
+    };
+  }
+
+  global.DeckLink = { deck: deck, taker: taker, phaseAt: phaseAt, wallNow: wallNow, CHANNEL: CHANNEL };
+})(typeof window !== 'undefined' ? window : globalThis);
+</script>
 <script>
 (() => {
 'use strict';
@@ -1176,7 +1327,7 @@ try {
 } catch (e) {}
 state.sets.forEach(s => { s.loopOn = false; });
 if (!state.source || typeof state.source !== 'object') state.source = { mode: 'sample', id: null };
-state.source.mode = 'sample'; // Discobot voices only exist once a host has said hello
+if (state.source.mode !== 'deck') state.source.mode = 'sample'; // Discobot voices only exist once a host has said hello
 let saveT = 0;
 // Inside Discobot the settings belong to the project, not this browser: tell the host instead.
 function save() {
@@ -1306,7 +1457,9 @@ function initAudio() {
       inputNode = new AudioWorkletNode(ctx, 'axis-input', { numberOfInputs: 0, numberOfOutputs: 1, outputChannelCount: [2] });
       pitchNode = new AudioWorkletNode(ctx, 'axis-pitch', { numberOfInputs: 1, numberOfOutputs: 1, outputChannelCount: [2] });
       inputNode.connect(inputGain); inputGain.connect(pitchNode); pitchNode.connect(chainIn);
-    }
+    } else inputGain.connect(chainIn);
+    deckGate = ctx.createGain(); deckGate.gain.value = 1; deckGate.connect(inputGain);
+    deckSync();
     rebuildChain();
     if (streaming) startStreaming();
   })();
@@ -1356,7 +1509,7 @@ function stopSource() {
   setTimeout(() => { try { g.disconnect(); } catch (e) {} }, 200);
   src = null; srcOn = false;
 }
-function sampleLoopDur() { const s = samples[state.sample]; const len = s.chans ? s.chans[0].length / s.sr : s.buffer ? s.buffer.duration : 0; return len * (s.loopEnd - s.loopStart); }
+function sampleLoopDur() { if (state.source.mode === 'deck') { const c = curDeckTape(); return c ? c.t.len / c.t.speed : 0; } const s = samples[state.sample]; const len = s.chans ? s.chans[0].length / s.sr : s.buffer ? s.buffer.duration : 0; return len * (s.loopEnd - s.loopStart); }
 
 function rebuildChain() {
   if (!ctx) return;
@@ -1408,6 +1561,98 @@ canvas.addEventListener('pointerdown', e => {
 canvas.addEventListener('pointermove', e => { if (!touching) return; const p = padPoint(e); pos.x = p.x; pos.y = p.y; });
 const endTouch = () => { touching = false; };
 canvas.addEventListener('pointerup', endTouch); canvas.addEventListener('pointercancel', endTouch); canvas.addEventListener('lostpointercapture', endTouch);
+
+/* ================= Tape Loop Deck as a source (DECK-LINK block) =================
+   Source → Deck lists the tapes on any Tape Loop Deck open in another tab of this browser. Pick
+   one and the pad plays its own copy, locked to the deck's playback, through the axis chains; the
+   deck keeps playing its tape too. The copy follows the deck: it plays while the deck plays, at the
+   tape's speed, and drops out while the deck mutes the tape (mute, solo or a pattern switch, which
+   arrives a moment ahead so it lands on the same line). Pitch on the pad goes through the pitch
+   shifter, so the copy never drifts off the deck's time. Play (or Touch) sounds and silences it. */
+let deckList = [], deckTapes = [], deckSig = '', deckPlay = null, deckGate = null, deckGateSig = '';
+const deckBufs = new Map(), deckAsked = new Map();
+const DLK = DeckLink.taker({ app: 'axis', title: 'Axis Stack',
+  onDecks: list => { deckList = list; deckRefresh(); },
+  onAudio: m => {
+    if (!ctx) return;
+    const key = m.deck + '/' + m.tape, b = ctx.createBuffer(2, m.left.length, m.sampleRate);
+    b.copyToChannel(m.left, 0); b.copyToChannel(m.right, 1);
+    deckBufs.set(key, { ver: m.ver, buffer: b }); deckAsked.delete(key);
+    deckSync();
+  } });
+const curDeckTape = () => deckTapes.find(x => x.key === state.source.id) || null;
+function deckRefresh(force) {
+  deckTapes = [];
+  for (const d of deckList) for (const t of d.tapes) deckTapes.push({ key: d.id + '/' + t.id, deckId: d.id, title: d.title, t });
+  const deck = state.source.mode === 'deck';
+  // a deck that was reloaded has new ids: find the tape again by name
+  if (deck && state.source.name && !curDeckTape()) { const m = deckTapes.find(x => x.t.name === state.source.name); if (m) state.source.id = m.key; }
+  const cur = deck ? curDeckTape() : null;
+  if (cur) state.source.name = cur.t.name;
+  DLK.use(cur ? cur.deckId : null, cur ? cur.t.id : null);
+  const sig = deckTapes.map(x => x.key + '\u0001' + x.t.name).join('\u0002');
+  if (deck && (force || sig !== deckSig)) { deckSig = sig; buildRail(); } else if (deck) updateRail();
+  for (const k of [...deckBufs.keys()]) if (!deckTapes.some(x => x.key === k)) deckBufs.delete(k);
+  deckSync();
+}
+function selectDeckTape(key) {
+  initAudio(); const x = deckTapes.find(d => d.key === key); if (!x) return;
+  state.source.id = key; state.source.name = x.t.name;
+  if (state.settings.gate !== 'touch') playing = true;
+  DLK.use(x.deckId, x.t.id); save(); updateRail(); deckSync();
+}
+function deckNote() {
+  if (!DLK.active) return 'This browser can’t talk between tabs, so the deck’s tapes can’t reach the pad.';
+  if (!deckList.length) return 'Open Tape Loop Deck in another tab of this browser and its tapes show up here.';
+  if (!deckTapes.length) return 'The deck has no tapes yet.';
+  const c = curDeckTape();
+  if (!c) return state.source.name ? `“${state.source.name}” isn’t on the deck any more. Pick a tape.` : 'Pick a tape. The pad plays a copy in time with the deck, which keeps playing its own.';
+  if (!c.t.playing) return 'The deck is stopped. The copy plays when the deck plays.';
+  if (!deckBufs.has(c.key)) return 'Getting the tape from the deck…';
+  if (!c.t.on) return 'The deck has this tape muted right now, so the copy is quiet too.';
+  return '';
+}
+window.__axisDeck = { cur: () => curDeckTape(), phase: now => deckPhase(now), get play() { return deckPlay; }, get gate() { return deckGate; }, link: DLK, ctxAtWall: w => ctxAtWall(w), wallAtCtx: t => wallAtCtx(t), get ctx() { return ctx; } };
+function deckPhase(now) { const p = deckPlay; const L = p.buf.duration; return pmod(p.anchorPhase + (now - p.anchorCtx) * p.rate, L); }
+function deckStart(key, buf, t) {
+  const when = ctx.currentTime + 0.03;
+  const src = ctx.createBufferSource(); src.buffer = buf; src.loop = true; src.playbackRate.value = t.speed;
+  const ph = pmod(DLK.phaseAt(t, wallAtCtx(when)), buf.duration);
+  const g = ctx.createGain(); g.gain.setValueAtTime(0, when); g.gain.linearRampToValueAtTime(1, when + 0.012);
+  src.connect(g); g.connect(deckGate); src.start(when, ph);
+  deckFade(when);
+  deckPlay = { key, buf, src, g, rate: t.speed, anchorCtx: when, anchorPhase: ph };
+}
+function deckFade(at) {
+  const p = deckPlay; if (!p) return;
+  at = Math.max(at || 0, ctx.currentTime);
+  p.g.gain.cancelScheduledValues(at); p.g.gain.setValueAtTime(p.g.gain.value, at); p.g.gain.linearRampToValueAtTime(0, at + 0.012);
+  try { p.src.stop(at + 0.05); } catch (e) {}
+  setTimeout(() => { try { p.g.disconnect(); } catch (e) {} }, 400);
+  deckPlay = null;
+}
+function deckSync() {
+  if (!ctx || !deckGate) return;
+  const c = state.source.mode === 'deck' ? curDeckTape() : null;
+  if (!c) { deckFade(); updateRail(); return; }
+  const t = c.t, have = deckBufs.get(c.key);
+  if ((!have || have.ver !== t.ver) && deckAsked.get(c.key) !== t.ver) { deckAsked.set(c.key, t.ver); DLK.fetch(c.deckId, t.id, t.ver); }
+  if (!have || !t.playing || ctx.state !== 'running') { deckFade(); updateRail(); return; }
+  // the deck's on/off, scheduled at the deck's time
+  const gs = t.on + '@' + t.onAt;
+  if (gs !== deckGateSig) {
+    deckGateSig = gs;
+    const at = Math.max(ctx.currentTime, t.onAt ? ctxAtWall(t.onAt) : 0), f = Math.max(0.005, (t.fadeMs || 0) / 1000), p = deckGate.gain;
+    p.cancelScheduledValues(at); p.setValueAtTime(p.value, at); p.linearRampToValueAtTime(t.on ? 1 : 0, at + f);
+  }
+  const now = ctx.currentTime;
+  if (!deckPlay || deckPlay.key !== c.key || deckPlay.buf !== have.buffer) { deckStart(c.key, have.buffer, t); updateRail(); return; }
+  if (Math.abs(deckPlay.rate - t.speed) > 1e-6) { deckStart(c.key, have.buffer, t); updateRail(); return; }   // the deck changed the tape's speed
+  const L = have.buffer.duration;
+  let err = DLK.phaseAt(t, wallAtCtx(now)) - deckPhase(now); err -= Math.round(err / L) * L;
+  if (Math.abs(err) > 0.02) deckStart(c.key, have.buffer, t);   // drifted or jumped: lock again
+  updateRail();
+}
 
 function loopSample(loop, t) {
   const p = loop.pts; if (!p.length) return null;
@@ -1474,7 +1719,7 @@ function tick() {
       if (inputOpen) { inputGain.gain.setTargetAtTime(0, ctx.currentTime, 0.008); inputOpen = false; }
     } else {
       if (srcOn) stopSource();
-      const open = state.settings.gate === 'touch' ? gateOpen : true;
+      const open = state.settings.gate === 'touch' ? gateOpen : (state.source.mode === 'deck' ? playing : true);
       if (open !== inputOpen) { inputGain.gain.setTargetAtTime(open ? 1 : 0, ctx.currentTime, 0.008); inputOpen = open; }
     }
   }
@@ -1574,19 +1819,21 @@ function voiceCode(v, i) {
 }
 function buildRail() {
   const sk = $('#sampleKeys'); sk.innerHTML = '';
-  const disco = state.source.mode === 'discobot';
-  sk.classList.toggle('scroll', disco && hostSources.length > 6);
-  if (disco) hostSources.forEach((v, i) => { const b = document.createElement('button'); b.className = 'key'; b.dataset.id = v.id; b.innerHTML = keyHTML(voiceCode(v, i), v.name); b.onclick = () => selectVoice(v.id); sk.appendChild(b); });
+  const disco = state.source.mode === 'discobot', deck = state.source.mode === 'deck';
+  sk.classList.toggle('scroll', (disco && hostSources.length > 6) || (deck && deckTapes.length > 6));
+  if (deck) deckTapes.forEach((x, i) => { const b = document.createElement('button'); b.className = 'key'; b.dataset.id = x.key; b.innerHTML = keyHTML(String(i + 1).padStart(2, '0'), x.t.name); b.title = x.t.name + ' · ' + x.title; b.onclick = () => selectDeckTape(x.key); sk.appendChild(b); });
+  else if (disco) hostSources.forEach((v, i) => { const b = document.createElement('button'); b.className = 'key'; b.dataset.id = v.id; b.innerHTML = keyHTML(voiceCode(v, i), v.name); b.onclick = () => selectVoice(v.id); sk.appendChild(b); });
   else samples.forEach((s, i) => { const b = document.createElement('button'); b.className = 'key'; b.innerHTML = keyHTML(i + 1, s.name); b.onclick = () => selectSample(i); sk.appendChild(b); });
   const st = $('#setKeys'); st.innerHTML = '';
   state.sets.forEach((s, i) => { const b = document.createElement('button'); b.className = 'key'; b.innerHTML = keyHTML('ABCD'[i], s.name); b.onclick = () => selectSet(i); st.appendChild(b); });
   updateRail();
 }
 function updateRail() {
-  const disco = state.source.mode === 'discobot';
-  if (disco) $$('#sampleKeys .key').forEach(b => b.setAttribute('aria-pressed', b.dataset.id === state.source.id));
+  const disco = state.source.mode === 'discobot', deck = state.source.mode === 'deck';
+  if (disco || deck) $$('#sampleKeys .key').forEach(b => b.setAttribute('aria-pressed', b.dataset.id === state.source.id));
   else $$('#sampleKeys .key').forEach((b, i) => b.setAttribute('aria-pressed', i === state.sample));
-  $('#srcSample').setAttribute('aria-pressed', !disco); $('#srcDisco').setAttribute('aria-pressed', disco);
+  $('#srcSample').setAttribute('aria-pressed', !disco && !deck); $('#srcDisco').setAttribute('aria-pressed', disco); $('#srcDeck').setAttribute('aria-pressed', deck);
+  $('#srcDeck').title = 'Play a copy of a Tape Loop Deck tape, in time with the deck, through the pad';
   $('#srcDisco').disabled = !isHosted;
   $('#srcDisco').title = isHosted ? 'Play a Discobot voice through the pad' : 'Available when Axis Stack runs inside Discobot';
   let note = '';
@@ -1595,7 +1842,7 @@ function updateRail() {
     else if (!state.source.id) note = 'Pick a Discobot voice. It leaves Discobot\'s mix and comes back through the pad.';
     else if (!hostSources.some(v => v.id === state.source.id)) note = 'That voice is no longer in this Discobot project. Pick another.';
     else if (inputSel !== state.source.id) note = 'Waiting for Discobot to hand over the voice…';
-  }
+  } else if (deck) note = deckNote();
   $('#srcNote').textContent = note; $('#srcNote').hidden = !note;
   $$('#setKeys .key').forEach((b, i) => b.setAttribute('aria-pressed', i === state.cur));
   const s = curSet();
@@ -1606,16 +1853,17 @@ function updateRail() {
   $('#holdKey').setAttribute('aria-pressed', state.settings.hold);
   $('#gateKey').setAttribute('aria-pressed', state.settings.gate === 'touch');
   const d = sampleLoopDur(), fit = hostFit();
-  $('#sampleLen').textContent = disco ? (inputSel ? 'live' : '—') : fit.beats ? fit.beats + ' beats' : d ? d.toFixed(2) + ' s loop' : '—';
+  $('#sampleLen').textContent = deck ? (d ? d.toFixed(2) + ' s loop' : '—') : disco ? (inputSel ? 'live' : '—') : fit.beats ? fit.beats + ' beats' : d ? d.toFixed(2) + ' s loop' : '—';
   const pb = $('#playBtn'); pb.setAttribute('aria-pressed', playing);
   pb.disabled = isHosted; if (isHosted) pb.setAttribute('aria-label', 'Discobot runs play and stop');
   $('#playIcon').setAttribute('d', playing ? 'M6 5h4v14H6zM14 5h4v14h-4z' : 'M7 4l13 8-13 8z');
-  if (!isHosted) pb.setAttribute('aria-label', playing ? 'Stop sample loop' : 'Play sample loop');
+  if (!isHosted) pb.setAttribute('aria-label', deck ? (playing ? 'Silence the deck copy' : 'Sound the deck copy') : playing ? 'Stop sample loop' : 'Play sample loop');
   $$('#gateSeg button').forEach(b => b.setAttribute('aria-pressed', b.dataset.v === state.settings.gate));
   $$('#syncSeg button').forEach(b => b.setAttribute('aria-pressed', (b.dataset.v === '1') === !!state.settings.loopSync));
 }
 function selectSample(i) {
   if (state.source.mode === 'discobot') { const v = hostSources[i]; if (v) selectVoice(v.id); return; }
+  if (state.source.mode === 'deck') { const x = deckTapes[i]; if (x) selectDeckTape(x.key); return; }
   initAudio(); state.sample = i; if (srcOn) startSource(); save(); updateRail();
 }
 function selectVoice(id) { initAudio(); state.source.id = id; requestInput(); save(); updateRail(); }
@@ -1623,6 +1871,8 @@ function setSourceMode(m) {
   if (m === 'discobot' && !isHosted) return;
   initAudio(); state.source.mode = m;
   if (m === 'sample') { requestInput(); if (srcOn) stopSource(); } else { stopSource(); requestInput(); }
+  if (m === 'deck' && state.settings.gate !== 'touch') playing = true;
+  deckRefresh(true); deckSync();
   save(); buildRail();
 }
 $$('#srcSeg button').forEach(b => b.onclick = () => setSourceMode(b.dataset.v));
@@ -2007,7 +2257,7 @@ function pushInput(m) {
 const r3 = v => Math.round(v * 1000) / 1000;
 function captureState() {
   const out = {
-    v: 1, cur: state.cur, sample: state.sample, source: { mode: state.source.mode, id: state.source.id },
+    v: 1, cur: state.cur, sample: state.sample, source: { mode: state.source.mode, id: state.source.id, name: state.source.name || null },
     gate: state.settings.gate, loopSync: !!state.settings.loopSync, hold: !!state.settings.hold,
     loopPoints: samples.map(s => s.builtin ? [r3(s.loopStart), r3(s.loopEnd)] : null),
     sets: state.sets.map(s => ({
@@ -2058,8 +2308,9 @@ function applyState(st) {
   if (Number.isInteger(st.cur) && st.cur >= 0 && st.cur < 4) state.cur = st.cur;
   if (Number.isInteger(st.sample) && st.sample >= 0 && st.sample < 4) state.sample = st.sample;
   if (st.source && typeof st.source === 'object') {
-    state.source.mode = st.source.mode === 'discobot' ? 'discobot' : 'sample';
-    state.source.id = typeof st.source.id === 'string' ? st.source.id.slice(0, 64) : null;
+    state.source.mode = st.source.mode === 'discobot' || st.source.mode === 'deck' ? st.source.mode : 'sample';
+    state.source.id = typeof st.source.id === 'string' ? st.source.id.slice(0, 120) : null;
+    state.source.name = typeof st.source.name === 'string' ? st.source.name.slice(0, 60) : null;
   }
   if (st.gate === 'touch' || st.gate === 'latch') state.settings.gate = st.gate;
   if (typeof st.loopSync === 'boolean') state.settings.loopSync = st.loopSync;
@@ -2077,7 +2328,7 @@ function applyState(st) {
     }
     if (state.source.mode === 'sample' && (state.sample !== oldSample || oldMode !== 'sample') && (srcOn || (playing && state.settings.gate !== 'touch'))) startSource();
   }
-  requestInput();
+  requestInput(); deckRefresh(true); deckSync();
   buildRail(); axisLabels(); buildReadout();
   if (!$('#page-chains').hidden) renderChains();
   if (!$('#page-setup').hidden) renderSamples();
@@ -2214,9 +2465,12 @@ function axLog() {
   const x = Math.round(pos.x * 127), y = Math.round(pos.y * 127);
   if (x !== axLast.x) { axx.cc(t, ccX, x, 'XY pad', ch); axLast.x = x; }
   if (y !== axLast.y) { axx.cc(t, ccY, y, 'XY pad', ch); axLast.y = y; }
-  if (srcOn && (!axLast.on || axLast.sample !== state.sample)) axx.hold('Sample', 60 + state.sample, t, 100, ch);
-  else if (!srcOn && axLast.on) axx.hold('Sample', null, t, 0, ch);
-  axLast.on = srcOn; axLast.sample = state.sample;
+  // the sounding sample holds a note: 60–63 for slots 1–4, 64 and up for deck tapes in list order
+  const di = state.source.mode === 'deck' && deckPlay && inputOpen ? deckTapes.findIndex(x => x.key === deckPlay.key) : -1;
+  const on = srcOn || di >= 0, note = di >= 0 ? Math.min(127, 64 + di) : 60 + state.sample;
+  if (on && (!axLast.on || axLast.note !== note)) axx.hold('Sample', note, t, 100, ch);
+  else if (!on && axLast.on) axx.hold('Sample', null, t, 0, ch);
+  axLast.on = on; axLast.note = note;
 }
 axx.mount(document.getElementById('exportBox'), { btn: 'btn', primary: 'btn primary' });
 })();
